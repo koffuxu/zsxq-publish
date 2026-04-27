@@ -105,8 +105,14 @@ class ZsxqPublisher:
 
         article_payload = {
             "req_data": {
+                # Current /v2/articles API requires explicit group_id; otherwise it returns code 1033.
+                "group_id": GROUP_ID,
                 "title": title,
                 "content": article_html,
+                # Keep the original Markdown for compatibility with the current editor / viewer.
+                "original_content": md_content,
+                # Explicitly include image_ids (even when empty) to match the web client shape.
+                "image_ids": [],
             }
         }
 
@@ -144,7 +150,18 @@ class ZsxqPublisher:
             }
         }
 
-        topic_result = self._post(ENDPOINTS["create_topic"], topic_payload)
+        topic_result = None
+        for attempt in range(1, 6):
+            topic_result = self._post(ENDPOINTS["create_topic"], topic_payload)
+            if topic_result and topic_result.get("succeeded"):
+                break
+
+            code = topic_result.get("code") if isinstance(topic_result, dict) else None
+            # Common transient failures observed from the web API.
+            if code in (429, 1059) or topic_result is None:
+                time.sleep(min(12.0, 2.5 * attempt))
+                continue
+            break
 
         if topic_result and topic_result.get("succeeded"):
             topic_data = topic_result.get("resp_data", {}).get("topic", {})
@@ -163,6 +180,8 @@ class ZsxqPublisher:
             print(f"  状态: {topic_data.get('process_status', 'unknown')}")
         else:
             print(f"  [WARN] 文章已创建但话题关联失败")
+            if topic_result:
+                print(f"  响应: {json.dumps(topic_result, ensure_ascii=False)}")
             print(f"  文章ID: {article_id} (可手动关联)")
             self._record_history(
                 publish_type="article",
