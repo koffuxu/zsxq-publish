@@ -11,6 +11,8 @@ import re
 from typing import List, Tuple
 from urllib.parse import quote
 
+MAX_TOPIC_BOLD_TITLE_ENCODED_LEN = 80
+
 
 def markdown_to_article_html(md_text: str) -> str:
     """将 Markdown 转换为知识星球文章 HTML 格式"""
@@ -39,8 +41,11 @@ def markdown_to_topic_text(md_text: str, title: str = "") -> str:
     # 添加加粗标题
     if title:
         encoded_title = quote(title, safe="")
-        parts.append(f'<e type="text_bold" title="{encoded_title}" />')
-        parts.append("")  # 空行
+        # 部分星球对富文本标题标签中的长 URL 编码标题处理不稳定，
+        # 超过阈值时直接省略加粗标题，正文首行仍会保留原始标题。
+        if len(encoded_title) <= MAX_TOPIC_BOLD_TITLE_ENCODED_LEN:
+            parts.append(f'<e type="text_bold" title="{encoded_title}" />')
+            parts.append("")  # 空行
 
     # 转换正文为纯文本
     plain_text = _strip_markdown(md_text)

@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """知识星球发布工具 - 配置模块
 
-用户配置存储在 data/user_config.json 中，首次运行时自动引导设置。
+敏感配置统一存储在 ~/.private_key/zsxq-publish/ 下，
+首次运行时自动引导设置；发布历史仍保留在技能 data/ 目录。
 """
 
 import json
@@ -13,11 +14,18 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent.parent
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 DATA_DIR = SKILL_DIR / "data"
+PRIVATE_DIR = Path.home() / ".private_key" / "zsxq-publish"
 PUBLISH_HISTORY_FILE = DATA_DIR / "publish_history.json"
-USER_CONFIG_FILE = DATA_DIR / "user_config.json"
+USER_CONFIG_FILE = PRIVATE_DIR / "user_config.json"
+AUTH_FILE = PRIVATE_DIR / "auth.json"
+GROUPS_FILE = PRIVATE_DIR / "groups.json"
+LEGACY_USER_CONFIG_FILE = DATA_DIR / "user_config.json"
+LEGACY_AUTH_FILE = DATA_DIR / "auth.json"
+LEGACY_GROUPS_FILE = Path.home() / ".private_key" / "zsxq_groups.json"
 
-# 确保数据目录存在
+# 确保存储目录存在
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+PRIVATE_DIR.mkdir(parents=True, exist_ok=True)
 
 # 知识星球 API 固定配置
 API_BASE = "https://api.zsxq.com/v2"
@@ -25,6 +33,44 @@ API_VERSION = "2.89.0"
 ARTICLE_THRESHOLD = 500
 TOPIC_MAX_TEXT_LENGTH = 10000
 TOPIC_MAX_IMAGE_COUNT = 9
+
+
+def _migrate_file(src: Path, dst: Path) -> bool:
+    """将旧位置文件迁移到新位置。仅在目标不存在时复制。"""
+    if src.exists() and not dst.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        return True
+    return False
+
+
+def _ensure_private_storage_layout() -> None:
+    """兼容旧版 data/ 存储布局，统一迁移到 ~/.private_key/zsxq-publish/。"""
+    _migrate_file(LEGACY_AUTH_FILE, AUTH_FILE)
+    _migrate_file(LEGACY_GROUPS_FILE, GROUPS_FILE)
+
+    if LEGACY_USER_CONFIG_FILE.exists():
+        legacy = json.loads(LEGACY_USER_CONFIG_FILE.read_text(encoding="utf-8"))
+        changed = False
+        if legacy.get("auth_file") and Path(legacy["auth_file"]) != AUTH_FILE:
+            changed = True
+        legacy["auth_file"] = str(AUTH_FILE)
+
+        if not USER_CONFIG_FILE.exists():
+            USER_CONFIG_FILE.write_text(
+                json.dumps(legacy, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        elif changed:
+            current = json.loads(USER_CONFIG_FILE.read_text(encoding="utf-8"))
+            current["auth_file"] = str(AUTH_FILE)
+            USER_CONFIG_FILE.write_text(
+                json.dumps(current, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+
+_ensure_private_storage_layout()
 
 
 def _load_user_config() -> dict:
@@ -37,6 +83,7 @@ def _load_user_config() -> dict:
 
 def _save_user_config(config: dict) -> None:
     """保存用户配置"""
+    config = {**config, "auth_file": str(AUTH_FILE)}
     with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
@@ -60,10 +107,10 @@ def setup_wizard() -> dict:
     # 2. auth.json 路径
     print()
     print("请输入 auth.json 文件的存放路径:")
-    print("  (Cookie 认证文件，留空则存在技能 data/ 目录下)")
+    print("  (Cookie 认证文件，留空则存在 ~/.private_key/zsxq-publish/ 下)")
     auth_path = input("  路径: ").strip()
     if not auth_path:
-        auth_path = str(DATA_DIR / "auth.json")
+        auth_path = str(AUTH_FILE)
     else:
         auth_path = str(Path(auth_path).resolve())
 
@@ -84,6 +131,9 @@ def setup_wizard() -> dict:
 def get_user_config() -> dict:
     """获取用户配置，不存在则运行配置向导"""
     config = _load_user_config()
+    if config and config.get("auth_file") != str(AUTH_FILE):
+        config["auth_file"] = str(AUTH_FILE)
+        _save_user_config(config)
     if not config.get("group_id"):
         config = setup_wizard()
     return config
@@ -91,9 +141,11 @@ def get_user_config() -> dict:
 
 # --- 加载用户配置并构建运行时常量 ---
 _user_config = _load_user_config()
+if _user_config and _user_config.get("auth_file") != str(AUTH_FILE):
+    _user_config["auth_file"] = str(AUTH_FILE)
+    _save_user_config(_user_config)
 
 GROUP_ID = _user_config.get("group_id", "")
-AUTH_FILE = Path(_user_config.get("auth_file", str(DATA_DIR / "auth.json")))
 
 ENDPOINTS = {
     "create_article": f"{API_BASE}/articles",

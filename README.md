@@ -35,7 +35,7 @@ python ~/.claude/skills/zsxq-publish/scripts/run.py main.py setup
 
 按提示输入：
 - **星球 ID**：从星球页面 URL 中获取（`https://wx.zsxq.com/group/这里的数字`）
-- **auth.json 路径**：Cookie 认证文件存放位置，留空使用默认路径
+- **auth.json 路径**：Cookie 认证文件存放位置，留空使用默认路径 `~/.private_key/zsxq-publish/auth.json`
 
 ### 2. 登录授权
 
@@ -111,9 +111,16 @@ zsxq-publish/
 │   ├── publisher.py           # 核心发布逻辑
 │   └── markdown_converter.py  # Markdown → 知识星球格式转换
 └── data/                       # 运行时数据（gitignored）
-    ├── user_config.json       # 用户个人配置
-    ├── auth.json              # Cookie 认证信息（可自定义路径）
     └── publish_history.json   # 发布历史记录
+
+敏感配置统一保存在 `~/.private_key/zsxq-publish/`：
+
+```text
+~/.private_key/zsxq-publish/
+├── auth.json                  # Cookie 认证信息
+├── user_config.json           # 当前默认星球配置
+└── groups.json                # 星球列表
+```
 ```
 
 ## 工作原理
