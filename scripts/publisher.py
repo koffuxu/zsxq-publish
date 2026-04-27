@@ -8,14 +8,17 @@
 """
 
 import json
+import mimetypes
+import re
 import time
 import random
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
 
 import requests
 
-from config import ENDPOINTS, GROUP_ID, PUBLISH_HISTORY_FILE
+from config import ENDPOINTS, GROUP_ID, PUBLISH_HISTORY_FILE, QINIU_UPLOAD_URL
 from auth import load_auth, build_request_headers
 from markdown_converter import (
     markdown_to_article_html,
@@ -31,6 +34,143 @@ class ZsxqPublisher:
     def __init__(self):
         self.cookies, self.base_headers = load_auth()
         self.history = self._load_history()
+
+    def _get_upload_token(self) -> Optional[str]:
+        """获取七牛云上传 token"""
+        payload = {
+            "req_data": {
+                "type": "image",
+                "usage": "article",
+                "name": "",
+                "hash": "",
+                "size": "",
+            }
+        }
+        result = self._post(ENDPOINTS["upload_image"], payload)
+        if result and result.get("succeeded"):
+            token = result.get("resp_data", {}).get("upload_token", "")
+            if token:
+                return token
+        print(f"  [WARN] 获取上传 token 失败")
+        return None
+
+    def _upload_image(self, image_data: bytes, filename: str) -> Optional[Dict]:
+        """上传单张图片到知识星球（七牛云）
+
+        Returns:
+            {"image_id": 123, "url": "https://..."} 或 None
+        """
+        token = self._get_upload_token()
+        if not token:
+            return None
+
+        mime_type, _ = mimetypes.guess_type(filename)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        try:
+            files = {"file": (filename, image_data, mime_type)}
+            data = {"token": token}
+            resp = requests.post(
+                QINIU_UPLOAD_URL,
+                files=files,
+                data=data,
+                timeout=60,
+            )
+            if resp.status_code == 200:
+                body = resp.json()
+                if body.get("succeeded"):
+                    image_id = body.get("resp_data", {}).get("image_id")
+                    url = body.get("link", "")
+                    return {"image_id": image_id, "url": url}
+                else:
+                    print(f"  [WARN] 七牛云上传返回失败: {body}")
+            else:
+                print(f"  [WARN] 七牛云上传 HTTP {resp.status_code}: {resp.text[:200]}")
+        except requests.exceptions.Timeout:
+            print("  [WARN] 七牛云上传超时")
+        except requests.exceptions.ConnectionError:
+            print("  [WARN] 七牛云上传网络连接失败")
+        except Exception as e:
+            print(f"  [WARN] 七牛云上传异常: {e}")
+        return None
+
+    def _process_article_images(
+        self, md_content: str, base_dir: Optional[Path] = None
+    ) -> Tuple[str, List[int]]:
+        """处理 Markdown 中的图片引用：上传到知识星球并替换 URL
+
+        Returns:
+            (更新后的 markdown, image_ids 列表)
+        """
+        image_ids = []
+
+        # 匹配 Markdown 图片语法: ![alt](url)
+        pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+        matches = list(pattern.finditer(md_content))
+        if not matches:
+            return md_content, image_ids
+
+        print(f"  检测到 {len(matches)} 张图片")
+
+        for i, match in enumerate(matches):
+            alt_text = match.group(1)
+            url = match.group(2)
+            print(f"  [{i+1}/{len(matches)}] 处理图片: {alt_text or url}")
+
+            image_data = None
+            filename = url.rsplit("/", 1)[-1] if "/" in url else url
+            # 去除 URL 参数
+            if "?" in filename:
+                filename = filename.split("?")[0]
+            if not filename:
+                filename = f"image_{i+1}"
+
+            # 本地图片
+            if not url.startswith(("http://", "https://")):
+                img_path = Path(url)
+                if not img_path.is_absolute():
+                    if base_dir:
+                        img_path = base_dir / url
+                    else:
+                        img_path = Path(url).resolve()
+                if img_path.exists():
+                    image_data = img_path.read_bytes()
+                    if not filename or "." not in filename:
+                        filename = img_path.name
+                else:
+                    print(f"    [SKIP] 文件不存在: {img_path}")
+                    continue
+            else:
+                # 远程图片：下载后上传
+                try:
+                    print(f"    下载远程图片...")
+                    resp = requests.get(url, timeout=30)
+                    if resp.status_code == 200:
+                        image_data = resp.content
+                    else:
+                        print(f"    [SKIP] 下载失败 HTTP {resp.status_code}")
+                        continue
+                except Exception as e:
+                    print(f"    [SKIP] 下载异常: {e}")
+                    continue
+
+            if not image_data:
+                print(f"    [SKIP] 无法获取图片数据")
+                continue
+
+            result = self._upload_image(image_data, filename)
+            if result and result.get("image_id"):
+                image_ids.append(result["image_id"])
+                cdn_url = result.get("url", "")
+                if cdn_url:
+                    escaped_url = re.escape(url)
+                    md_content = re.sub(escaped_url, cdn_url, md_content, count=1)
+                    print(f"    [OK] image_id={result['image_id']}")
+            else:
+                print(f"    [FAIL] 上传失败，保留原始引用")
+
+        return md_content, image_ids
 
     def publish_topic(
         self, text: str, title: str = "", tags: Optional[List[str]] = None
@@ -76,10 +216,12 @@ class ZsxqPublisher:
         return result or {}
 
     def publish_article(
-        self, md_content: str, title: str = "", tags: Optional[List[str]] = None
+        self, md_content: str, title: str = "", tags: Optional[List[str]] = None,
+        base_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """发布文章（长内容，两步流程）
 
+        Step 0: 处理图片 → 上传到知识星球获取 image_ids
         Step 1: POST /v2/articles 创建文章 → 获取 article_id
         Step 2: POST /v2/groups/{id}/topics 创建引用文章的话题
 
@@ -87,6 +229,7 @@ class ZsxqPublisher:
             md_content: Markdown 格式的文章内容
             title: 文章标题（如果为空，从 Markdown 中提取）
             tags: 可选标签列表
+            base_dir: 本地图片引用的基准目录
         Returns:
             API 响应数据
         """
@@ -98,6 +241,11 @@ class ZsxqPublisher:
 
         if not title:
             title = "未命名文章"
+
+        # Step 0: 处理图片上传
+        print(f"  Step 0: 处理图片...")
+        md_content, image_ids = self._process_article_images(md_content, base_dir=base_dir)
+        print(f"  图片处理完成，共 {len(image_ids)} 张")
 
         # Step 1: 创建文章
         print(f"  Step 1: 创建文章 '{title}'...")
@@ -111,8 +259,7 @@ class ZsxqPublisher:
                 "content": article_html,
                 # Keep the original Markdown for compatibility with the current editor / viewer.
                 "original_content": md_content,
-                # Explicitly include image_ids (even when empty) to match the web client shape.
-                "image_ids": [],
+                "image_ids": image_ids,
             }
         }
 
@@ -206,7 +353,6 @@ class ZsxqPublisher:
             mode: 发布模式 - "auto" (自动判断), "topic" (话题), "article" (文章)
             tags: 可选标签列表
         """
-        from pathlib import Path
         from config import ARTICLE_THRESHOLD
 
         path = Path(file_path)
@@ -226,7 +372,7 @@ class ZsxqPublisher:
             print(f"自动选择模式: {mode}")
 
         if mode == "article":
-            return self.publish_article(md_content, title=title, tags=tags)
+            return self.publish_article(md_content, title=title, tags=tags, base_dir=path.parent)
         else:
             return self.publish_topic(md_content, title=title, tags=tags)
 

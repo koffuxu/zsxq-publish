@@ -29,6 +29,7 @@ PRIVATE_DIR.mkdir(parents=True, exist_ok=True)
 
 # 知识星球 API 固定配置
 API_BASE = "https://api.zsxq.com/v2"
+QINIU_UPLOAD_URL = "https://upload-z1.qiniup.com/"
 API_VERSION = "2.89.0"
 ARTICLE_THRESHOLD = 500
 TOPIC_MAX_TEXT_LENGTH = 10000
@@ -152,4 +153,5 @@ ENDPOINTS = {
     "create_topic": f"{API_BASE}/groups/{GROUP_ID}/topics",
     "settings": f"{API_BASE}/settings",
     "hashtags": f"{API_BASE}/users/self/groups/{GROUP_ID}/hashtags",
+    "upload_image": f"{API_BASE}/uploads",
 }

@@ -77,7 +77,7 @@ def cmd_article(args):
     from pathlib import Path
 
     md_content = Path(args.file).read_text(encoding="utf-8")
-    result = pub.publish_article(md_content, title=args.title or "", tags=tags)
+    result = pub.publish_article(md_content, title=args.title or "", tags=tags, base_dir=Path(args.file).parent)
     return 0 if result.get("succeeded") else 1
 
 
