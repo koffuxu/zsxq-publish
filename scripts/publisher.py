@@ -178,9 +178,12 @@ class ZsxqPublisher:
             print(f"  文章ID: {article_id}")
             print(f"  文章链接: {article_url}")
             print(f"  状态: {topic_data.get('process_status', 'unknown')}")
+            return topic_result
         else:
             print(f"  [WARN] 文章已创建但话题关联失败")
             if topic_result:
+                code = topic_result.get("code", "?")
+                print(f"  错误码: {code}")
                 print(f"  响应: {json.dumps(topic_result, ensure_ascii=False)}")
             print(f"  文章ID: {article_id} (可手动关联)")
             self._record_history(
@@ -190,8 +193,8 @@ class ZsxqPublisher:
                 article_url=article_url,
                 status="topic_failed",
             )
-
-        return topic_result or article_result or {}
+            # 返回话题创建失败的结果，让调用方能感知到失败
+            return topic_result if topic_result else {"succeeded": False, "code": "topic_creation_failed"}
 
     def publish_file(
         self, file_path: str, mode: str = "auto", tags: Optional[List[str]] = None
